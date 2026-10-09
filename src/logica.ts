@@ -1,23 +1,20 @@
 export const CONFIG = {
-  // Tiempo en milisegundos de cada paso de la cuenta regresiva.
-  TIEMPO_CUENTA_REGRESIVA_MS: 1000,
-  // Número inicial de la cuenta regresiva.
-  CUENTA_INICIAL: 3,
-  // Mínimo de espera en rojo antes del cambio a verde, en milisegundos.
-  ESPERA_ROJO_MIN_MS: 1500,
-  // Máximo de espera en rojo antes del cambio a verde, en milisegundos.
-  ESPERA_ROJO_MAX_MS: 3500,
-  // Duración del aviso de toque anticipado, en milisegundos.
-  DURACION_TOQUE_ANTICIPADO_MS: 800,
-  // Duración del estado de preparación/espera, en milisegundos.
-  DURACION_ESPERA_MS: 200,
-  // Duración máxima de intento aceptado antes de invalidarlo, en milisegundos.
-  TIEMPO_MAXIMO_INTENTO_MS: 10000,
-};
+  // Espera mínima en rojo, en milisegundos.
+  ESPERA_ROJA_MIN_MS: 1000,
+  // Espera máxima en rojo, en milisegundos.
+  ESPERA_ROJA_MAX_MS: 5000,
+  // Granularidad de la espera aleatoria, en milisegundos.
+  PASO_ESPERA_MS: 1,
+  // Multiplicador adimensional del generador seudoaleatorio.
+  MULTIPLICADOR_ALEATORIO: 1664525,
+  // Incremento adimensional del generador seudoaleatorio.
+  INCREMENTO_ALEATORIO: 1013904223,
+  // Cantidad de estados posibles del generador seudoaleatorio.
+  MODULO_ALEATORIO: 4294967296,
+} as const;
 
 export type FaseJuego =
   | 'inactivo'
-  | 'cuenta'
   | 'rojo'
   | 'verde'
   | 'amarillo'
@@ -25,110 +22,119 @@ export type FaseJuego =
 
 export type ColorPantalla = 'gris' | 'rojo' | 'verde' | 'amarillo';
 
+export type GeneradorSemilla = () => number;
+
 export interface EstadoJuego {
   fase: FaseJuego;
   color: ColorPantalla;
-  cuentaRegresiva: number;
   tiempoActualMs: number;
   mejorMarcaMs: number | null;
   ultimoTiempoMs: number | null;
   inicioRojoMs: number | null;
   inicioVerdeMs: number | null;
-  retardoVerdeMs: number;
-  semilla: number;
-  aleatorio: () => number;
+  retardoVerdeMs: number | null;
+  aleatorio: GeneradorSemilla;
 }
 
-export type GeneradorSemilla = () => number;
+function semillaValida(semilla: number): boolean {
+  return (
+    Number.isInteger(semilla) &&
+    semilla >= 0 &&
+    semilla < CONFIG.MODULO_ALEATORIO
+  );
+}
 
-export function crearGeneradorSemilla(seed: number): GeneradorSemilla {
-  let estado = seed >>> 0;
+export function crearGeneradorSemilla(semilla: number): GeneradorSemilla {
+  if (!semillaValida(semilla)) {
+    throw new RangeError('La semilla debe ser un entero sin signo de 32 bits.');
+  }
+
+  let estado = semilla;
 
   return () => {
-    estado = (estado + 0x6d2b79f5) >>> 0;
-    let temporaria = Math.imul(estado ^ (estado >>> 15), 1 | estado);
-    temporaria = (temporaria + Math.imul(temporaria ^ (temporaria >>> 7), 61 | temporaria) ^ temporaria) >>> 0;
-    return (temporaria ^ (temporaria >>> 14)) / 4294967296;
+    estado =
+      (Math.imul(estado, CONFIG.MULTIPLICADOR_ALEATORIO) +
+        CONFIG.INCREMENTO_ALEATORIO) >>>
+      0;
+    return estado / CONFIG.MODULO_ALEATORIO;
   };
 }
 
-export function crearEstadoJuego(semilla = 1): EstadoJuego {
+export function crearEstadoJuego(semilla: number): EstadoJuego {
   return {
     fase: 'inactivo',
     color: 'gris',
-    cuentaRegresiva: CONFIG.CUENTA_INICIAL,
     tiempoActualMs: 0,
     mejorMarcaMs: null,
     ultimoTiempoMs: null,
     inicioRojoMs: null,
     inicioVerdeMs: null,
-    retardoVerdeMs: 0,
-    semilla,
+    retardoVerdeMs: null,
     aleatorio: crearGeneradorSemilla(semilla),
   };
 }
 
-export function iniciarJuego(estado: EstadoJuego): boolean {
-  if (estado.fase !== 'inactivo' && estado.fase !== 'resultado') {
+export function iniciarJuego(
+  estado: EstadoJuego,
+  ahoraMs: number,
+): boolean {
+  if (
+    (estado.fase !== 'inactivo' &&
+      estado.fase !== 'amarillo' &&
+      estado.fase !== 'resultado') ||
+    !Number.isFinite(ahoraMs)
+  ) {
     return false;
   }
 
-  estado.fase = 'cuenta';
-  estado.color = 'gris';
-  estado.cuentaRegresiva = CONFIG.CUENTA_INICIAL;
-  estado.tiempoActualMs = 0;
-  estado.ultimoTiempoMs = null;
-  estado.inicioRojoMs = null;
-  estado.inicioVerdeMs = null;
-  estado.retardoVerdeMs = Math.round(
-    CONFIG.ESPERA_ROJO_MIN_MS +
-      estado.aleatorio() * (CONFIG.ESPERA_ROJO_MAX_MS - CONFIG.ESPERA_ROJO_MIN_MS),
-  );
+  const cantidadPasos =
+    (CONFIG.ESPERA_ROJA_MAX_MS - CONFIG.ESPERA_ROJA_MIN_MS) /
+    CONFIG.PASO_ESPERA_MS;
+  const pasoAleatorio = Math.floor(estado.aleatorio() * (cantidadPasos + 1));
 
-  return true;
-}
-
-export function avanzarCuentaRegresiva(estado: EstadoJuego): boolean {
-  if (estado.fase !== 'cuenta') {
-    return false;
-  }
-
-  if (estado.cuentaRegresiva > 1) {
-    estado.cuentaRegresiva -= 1;
-    return true;
-  }
-
-  estado.cuentaRegresiva = 0;
   estado.fase = 'rojo';
   estado.color = 'rojo';
-  estado.inicioRojoMs = 0;
-  estado.inicioVerdeMs = null;
   estado.tiempoActualMs = 0;
+  estado.ultimoTiempoMs = null;
+  estado.inicioRojoMs = ahoraMs;
+  estado.inicioVerdeMs = null;
+  estado.retardoVerdeMs =
+    CONFIG.ESPERA_ROJA_MIN_MS + pasoAleatorio * CONFIG.PASO_ESPERA_MS;
+
   return true;
 }
 
-export function actualizarEstadoTiempo(estado: EstadoJuego, ahoraMs: number): boolean {
-  if (estado.fase === 'rojo') {
-    if (estado.inicioRojoMs === null) {
-      estado.inicioRojoMs = ahoraMs;
+export function actualizarEstadoTiempo(
+  estado: EstadoJuego,
+  ahoraMs: number,
+): boolean {
+  if (!Number.isFinite(ahoraMs)) {
+    return false;
+  }
+
+  if (
+    estado.fase === 'rojo' &&
+    estado.inicioRojoMs !== null &&
+    estado.retardoVerdeMs !== null
+  ) {
+    const inicioVerdeMs = estado.inicioRojoMs + estado.retardoVerdeMs;
+
+    if (ahoraMs < inicioVerdeMs) {
       return true;
     }
 
-    const diferencia = ahoraMs - estado.inicioRojoMs;
-
-    if (diferencia >= estado.retardoVerdeMs) {
-      estado.fase = 'verde';
-      estado.color = 'verde';
-      estado.inicioVerdeMs = ahoraMs;
-      estado.tiempoActualMs = 0;
-      return true;
-    }
-
-    estado.tiempoActualMs = diferencia;
+    estado.fase = 'verde';
+    estado.color = 'verde';
+    estado.inicioVerdeMs = inicioVerdeMs;
+    estado.tiempoActualMs = ahoraMs - inicioVerdeMs;
     return true;
   }
 
   if (estado.fase === 'verde' && estado.inicioVerdeMs !== null) {
+    if (ahoraMs < estado.inicioVerdeMs) {
+      return false;
+    }
+
     estado.tiempoActualMs = ahoraMs - estado.inicioVerdeMs;
     return true;
   }
@@ -136,41 +142,65 @@ export function actualizarEstadoTiempo(estado: EstadoJuego, ahoraMs: number): bo
   return false;
 }
 
-export function guardarNuevaMarca(estado: EstadoJuego, tiempoMs: number): boolean {
-  if (tiempoMs < 0) {
+function terminarIntento(estado: EstadoJuego, ahoraMs: number): boolean {
+  if (estado.inicioVerdeMs === null || ahoraMs < estado.inicioVerdeMs) {
     return false;
   }
 
-  if (estado.mejorMarcaMs === null || tiempoMs < estado.mejorMarcaMs) {
-    estado.mejorMarcaMs = tiempoMs;
-    return true;
+  const tiempoReaccionMs = ahoraMs - estado.inicioVerdeMs;
+  estado.tiempoActualMs = tiempoReaccionMs;
+  estado.ultimoTiempoMs = tiempoReaccionMs;
+  estado.fase = 'resultado';
+  estado.color = 'verde';
+
+  if (
+    estado.mejorMarcaMs === null ||
+    tiempoReaccionMs < estado.mejorMarcaMs
+  ) {
+    estado.mejorMarcaMs = tiempoReaccionMs;
   }
 
-  return false;
+  return true;
 }
 
-export function tocarPantalla(estado: EstadoJuego, ahoraMs: number): boolean {
-  if (estado.fase === 'inactivo' || estado.fase === 'cuenta') {
+export function tocarPantalla(
+  estado: EstadoJuego,
+  ahoraMs: number,
+): boolean {
+  if (!Number.isFinite(ahoraMs)) {
     return false;
   }
 
-  if (estado.fase === 'rojo') {
-    estado.fase = 'amarillo';
-    estado.color = 'amarillo';
-    estado.ultimoTiempoMs = null;
-    estado.tiempoActualMs = estado.inicioRojoMs === null ? 0 : ahoraMs - estado.inicioRojoMs;
-    return false;
-  }
+  if (
+    estado.fase === 'rojo' &&
+    estado.inicioRojoMs !== null &&
+    estado.retardoVerdeMs !== null
+  ) {
+    const inicioVerdeMs = estado.inicioRojoMs + estado.retardoVerdeMs;
 
-  if (estado.fase === 'verde' && estado.inicioVerdeMs !== null) {
-    const tiempo = ahoraMs - estado.inicioVerdeMs;
-    estado.ultimoTiempoMs = tiempo;
-    estado.tiempoActualMs = tiempo;
-    estado.fase = 'resultado';
+    if (ahoraMs < estado.inicioRojoMs) {
+      return false;
+    }
+
+    if (ahoraMs < inicioVerdeMs) {
+      estado.fase = 'amarillo';
+      estado.color = 'amarillo';
+      estado.tiempoActualMs = 0;
+      estado.ultimoTiempoMs = null;
+      estado.inicioRojoMs = null;
+      estado.inicioVerdeMs = null;
+      estado.retardoVerdeMs = null;
+      return true;
+    }
+
+    estado.fase = 'verde';
     estado.color = 'verde';
+    estado.inicioVerdeMs = inicioVerdeMs;
+    return terminarIntento(estado, ahoraMs);
+  }
 
-    const marcaActualizada = guardarNuevaMarca(estado, tiempo);
-    return marcaActualizada || estado.mejorMarcaMs === tiempo;
+  if (estado.fase === 'verde') {
+    return terminarIntento(estado, ahoraMs);
   }
 
   return false;
@@ -178,14 +208,4 @@ export function tocarPantalla(estado: EstadoJuego, ahoraMs: number): boolean {
 
 export function compararMarca(estado: EstadoJuego): number | null {
   return estado.mejorMarcaMs;
-}
-
-export function reiniciarAlEstadoBase(estado: EstadoJuego): boolean {
-  if (estado.fase === 'inactivo') {
-    return false;
-  }
-
-  const estadoBase = crearEstadoJuego(estado.semilla);
-  Object.assign(estado, estadoBase);
-  return true;
 }
